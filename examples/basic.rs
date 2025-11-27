@@ -1,3 +1,4 @@
+use std::f64::consts::PI;
 use anymap_serde::SerializableAnyMap;
 use serde::{Deserialize, Serialize};
 
@@ -21,7 +22,7 @@ fn main() {
         b: "world".to_string(),
     });
     m.insert(Bar {
-        x: 3.14,
+        x: PI,
         y: vec![1, 2, 3],
     });
     m.insert(42usize);
