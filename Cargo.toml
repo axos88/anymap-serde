@@ -1,7 +1,24 @@
 [package]
+
 name = "anymap-serde"
 version = "0.1.0"
 edition = "2024"
+
+description = "Low overhead AnyMap with serde-backed serialization of stored values"
+authors = ["axos88 <akos@vandra.hu>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/axos88/anymap-serde"
+homepage = "https://github.com/axos88/anymap-serde"
+documentation = "https://docs.rs/anymap-serde"
+readme = "README.md"
+keywords = ["anymap", "serde", "serialization"]
+categories = ["data-structures", "serialization"]
+
+[badges]
+docsrs = { status = "stable" }
+
+[package.metadata.docs.rs]
+all-features = true
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
