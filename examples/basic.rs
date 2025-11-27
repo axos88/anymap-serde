@@ -1,6 +1,6 @@
-use std::f64::consts::PI;
 use anymap_serde::SerializableAnyMap;
 use serde::{Deserialize, Serialize};
+use std::f64::consts::PI;
 
 #[derive(Serialize, Deserialize)]
 struct Foo {
