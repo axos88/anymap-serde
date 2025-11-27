@@ -67,13 +67,14 @@ use std::{any::Any, collections::HashMap};
 /// Safety notes:
 /// - Some escape hatches (`as_raw_mut`, `from_raw`) are `unsafe` — the caller
 ///   must ensure the key string matches the type stored under it.
+///
 /// A stored entry containing the serialized representation and an optional
 /// cached runtime value.
 ///
 #[derive(Default, Serialize, Deserialize, Debug, Clone)]
 #[serde(transparent)]
 pub struct SerializableAnyMap {
-    raw: HashMap<String, SerializableAnyMapEntry>,
+    raw: HashMap<String, Wrapper>,
 }
 
 impl SerializableAnyMap {
@@ -182,8 +183,7 @@ impl SerializableAnyMap {
         T: for<'de> Deserialize<'de> + Any + 'static,
     {
         self.get_serialized_value::<T>()
-            .map(|v| T::deserialize(v.clone()).ok())
-            .flatten()
+            .and_then(|v| T::deserialize(v.clone()).ok())
     }
 
     /// Get a mutable reference to a value of type `T`, lazily deserializing into the cache if necessary.
@@ -211,15 +211,15 @@ impl SerializableAnyMap {
     ///
     /// This is lower-level and useful if you already have a Value.
     ///
-    /// # Notes
-    /// Marked unsafe, since we cannot verify that the provided Value matches the type name.
+    /// # Safety
+    /// The provided Value needs to match the given matches the type name.
     #[inline]
     pub unsafe fn insert_value_by_name(
         &mut self,
         type_name: String,
         value: Value,
     ) -> Option<Value> {
-        let e = SerializableAnyMapEntry {
+        let e = Wrapper {
             serialized: value,
             value: None,
         };
@@ -235,7 +235,7 @@ impl SerializableAnyMap {
         let key = key_for_type::<T>().to_string();
         let serialized = to_value(&value).expect("serialization failed");
 
-        let new_entry = SerializableAnyMapEntry {
+        let new_entry = Wrapper {
             serialized,
             value: Some(Box::new(value)),
         };
@@ -327,7 +327,7 @@ impl SerializableAnyMap {
     /// This will seldom be useful, but it’s conceivable that you could wish to iterate
     /// over all the items in the collection, and this lets you do that.
     #[inline]
-    pub fn as_raw(&self) -> &HashMap<String, SerializableAnyMapEntry> {
+    pub fn as_raw(&self) -> &HashMap<String, Wrapper> {
         &self.raw
     }
 
@@ -344,7 +344,7 @@ impl SerializableAnyMap {
     ///
     /// (*Removing* entries is perfectly safe.)
     #[inline]
-    pub unsafe fn as_raw_mut(&mut self) -> &mut HashMap<String, SerializableAnyMapEntry> {
+    pub unsafe fn as_raw_mut(&mut self) -> &mut HashMap<String, Wrapper> {
         &mut self.raw
     }
 
@@ -354,7 +354,7 @@ impl SerializableAnyMap {
     /// the items in the collection and do *something* with some or all of them, and this
     /// lets you do that, without the `unsafe` that `.as_raw_mut().drain()` would require.
     #[inline]
-    pub fn into_raw(self) -> HashMap<String, SerializableAnyMapEntry> {
+    pub fn into_raw(self) -> HashMap<String, Wrapper> {
         self.raw
     }
 
@@ -372,12 +372,12 @@ impl SerializableAnyMap {
     /// For all entries in the raw map, the key (a `String`) must match the value’s type as returned by any::type_name(),
     /// or *undefined behaviour* will occur when you access that entry.
     #[inline]
-    pub unsafe fn from_raw(raw: HashMap<String, SerializableAnyMapEntry>) -> SerializableAnyMap {
+    pub unsafe fn from_raw(raw: HashMap<String, Wrapper>) -> SerializableAnyMap {
         Self { raw }
     }
 }
 
-impl<A: ?Sized + Any + Serialize + for<'de> Deserialize<'de>> Extend<Box<A>>
+impl<A: Any + Serialize + for<'de> Deserialize<'de>> Extend<Box<A>>
     for SerializableAnyMap
 {
     #[inline]
@@ -386,7 +386,7 @@ impl<A: ?Sized + Any + Serialize + for<'de> Deserialize<'de>> Extend<Box<A>>
             let serialized = to_value(&*item).expect("serialization failed");
             let _ = self.raw.insert(
                 key_for_type::<T>().to_string(),
-                SerializableAnyMapEntry {
+                Wrapper {
                     serialized,
                     value: Some(item),
                 },
@@ -400,7 +400,7 @@ impl<A: ?Sized + Any + Serialize + for<'de> Deserialize<'de>> Extend<Box<A>>
 ///
 /// - `serialized`: the `serde_value::Value` used for Serialize/Deserialize of the map.
 /// - `value`: an optional `Box<dyn Any>` holding the deserialized value. This field is not
-/// serialized and is cleared on `Clone` and `Deserialize`.
+///   serialized and is cleared on `Clone` and `Deserialize`.
 ///
 /// Semantics:
 /// - On `insert`, both `serialized` and `value` are populated.
@@ -410,14 +410,14 @@ impl<A: ?Sized + Any + Serialize + for<'de> Deserialize<'de>> Extend<Box<A>>
 ///
 /// Notes:
 /// - The cloning, serialization and deserialization happens based on the serialized `serde_value::Value`, so
-/// any modifications to fields that are marked `#[serde(skip)]` will not be lost after a serialization
-/// round-trip, or after cloning the map.
+///   any modifications to fields that are marked `#[serde(skip)]` will not be lost after a serialization
+///   round-trip, or after cloning the map.
 /// - Currently any modifications to the cached `value` are not reflected back into the `serialized` form, so
-/// serialization WILL reflect the original value only. This is a known limitation and is planned to be
-/// addressed in a future version by returning a Guard object that will update the serialized value on Drop.
+///   serialization WILL reflect the original value only. This is a known limitation and is planned to be
+///   addressed in a future version by returning a Guard object that will update the serialized value on Drop.
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(transparent)]
-pub struct SerializableAnyMapEntry {
+pub struct Wrapper {
     serialized: Value,
 
     /// value runtime representation; skipped during (de)serialization.
@@ -426,22 +426,22 @@ pub struct SerializableAnyMapEntry {
     value: Option<Box<dyn Any>>,
 }
 
-impl Clone for SerializableAnyMapEntry {
+impl Clone for Wrapper {
     fn clone(&self) -> Self {
-        SerializableAnyMapEntry {
+        Wrapper {
             serialized: self.serialized.clone(),
             value: None, // do not clone cached value
         }
     }
 }
 
-impl SerializableAnyMapEntry {
+impl Wrapper {
     /// Attempt to get an immutable reference to the deserialized value of type `T`. Will return None
     /// if the value has not yet been deserialized, as we need a mutable reference to mutate the
     /// entry to save the deserialized value.
-    pub fn try_get<T: 'static>(&self) -> Option<&T>
+    pub fn try_get<T>(&self) -> Option<&T>
     where
-        T: for<'de> Deserialize<'de>,
+        T: for<'de> Deserialize<'de> + 'static,
     {
         self.value.as_ref()?.downcast_ref::<T>()
     }
@@ -471,9 +471,9 @@ impl SerializableAnyMapEntry {
     }
 
     /// Attempt to extract the inner value by deserializing if necessary.
-    pub fn into_inner<T: 'static>(mut self) -> Result<T, serde_value::DeserializerError>
+    pub fn into_inner<T>(mut self) -> Result<T, serde_value::DeserializerError>
     where
-        T: for<'de> Deserialize<'de>,
+        T: for<'de> Deserialize<'de> + 'static,
     {
         self.value
             .take()

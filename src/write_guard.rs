@@ -1,4 +1,4 @@
-use crate::SerializableAnyMapEntry;
+use crate::Wrapper;
 use serde::Serialize;
 use serde_value::to_value;
 use std::marker::PhantomData;
@@ -10,7 +10,7 @@ pub struct WriteGuard<'a, T>
 where
     T: Serialize + 'static,
 {
-    entry: Option<&'a mut SerializableAnyMapEntry>,
+    entry: Option<&'a mut Wrapper>,
     ghost: PhantomData<T>,
 }
 
@@ -18,7 +18,7 @@ impl<'a, T> WriteGuard<'a, T>
 where
     T: Serialize + 'static,
 {
-    pub(crate) fn new(entry: &'a mut SerializableAnyMapEntry) -> Self {
+    pub(crate) fn new(entry: &'a mut Wrapper) -> Self {
         WriteGuard {
             entry: Some(entry),
             ghost: PhantomData,
@@ -27,18 +27,17 @@ where
 
     pub fn commit(&mut self) {
         // Re-serialize the potentially-mutated concrete value into serialized.
-        if let Some(ref mut entry) = self.entry {
-            if let Some(ref boxed) = entry.value {
-                let concrete_ref = boxed
-                    .downcast_ref::<T>()
-                    .expect("wrong type in serialization");
-                entry.serialized = to_value(concrete_ref).expect("serialization failed");
-            }
+        if let Some(ref mut entry) = self.entry
+          && let Some(ref boxed) = entry.value {
+            let concrete_ref = boxed
+              .downcast_ref::<T>()
+              .expect("wrong type in serialization");
+            entry.serialized = to_value(concrete_ref).expect("serialization failed");
         }
     }
     pub fn into_ref(mut self) -> &'a T {
         self.commit();
-        &*self
+        self
             .entry
             .take()
             .unwrap()
