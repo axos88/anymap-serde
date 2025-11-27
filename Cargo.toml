@@ -12,7 +12,7 @@ homepage = "https://github.com/axos88/anymap-serde"
 documentation = "https://docs.rs/anymap-serde"
 readme = "README.md"
 keywords = ["anymap", "serde", "serialization"]
-categories = ["data-structures", "serialization"]
+categories = ["data-structures", "encoding"]
 
 [badges]
 docsrs = { status = "stable" }
