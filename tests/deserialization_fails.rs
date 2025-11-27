@@ -1,18 +1,6 @@
 #[cfg(test)]
 mod tests {
     use anymap_serde::SerializableAnyMap;
-    use serde_value::Unexpected::Str;
-    use std::fmt::Debug;
-    #[derive(Debug)]
-    struct EqDebug<T>(T);
-
-    impl<T: Debug> PartialEq for EqDebug<T> {
-        fn eq(&self, other: &Self) -> bool {
-            format!("{:?}", self.0) == format!("{:?}", other.0)
-        }
-    }
-
-    impl<T: Debug> Eq for EqDebug<T> {}
 
     #[test]
     fn entry_should_be_removed_if_deserialization_fails() {
