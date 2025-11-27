@@ -28,17 +28,17 @@ where
     pub fn commit(&mut self) {
         // Re-serialize the potentially-mutated concrete value into serialized.
         if let Some(ref mut entry) = self.entry
-          && let Some(ref boxed) = entry.value {
+            && let Some(ref boxed) = entry.value
+        {
             let concrete_ref = boxed
-              .downcast_ref::<T>()
-              .expect("wrong type in serialization");
+                .downcast_ref::<T>()
+                .expect("wrong type in serialization");
             entry.serialized = to_value(concrete_ref).expect("serialization failed");
         }
     }
     pub fn into_ref(mut self) -> &'a T {
         self.commit();
-        self
-            .entry
+        self.entry
             .take()
             .unwrap()
             .value

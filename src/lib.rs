@@ -377,9 +377,7 @@ impl SerializableAnyMap {
     }
 }
 
-impl<A: Any + Serialize + for<'de> Deserialize<'de>> Extend<Box<A>>
-    for SerializableAnyMap
-{
+impl<A: Any + Serialize + for<'de> Deserialize<'de>> Extend<Box<A>> for SerializableAnyMap {
     #[inline]
     fn extend<T: IntoIterator<Item = Box<A>>>(&mut self, iter: T) {
         for item in iter {
