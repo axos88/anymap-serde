@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Skip mechanism
+if [[ "${SKIP:-}" == "1" ]]; then
+  echo "SKIP=1 detected — skipping pre-push checks."
+  exit 0
+fi
+
+echo "Preparing workspace for pre-push checks..."
+
+STASHED=0
+
+# If there are unstaged or staged changes, stash them
+if ! git diff --quiet || ! git diff --cached --quiet; then
+  echo "Uncommitted changes detected — stashing..."
+  git stash push -u -k -q
+  STASHED=1
+fi
+
+# Ensure stash is popped even on error
+cleanup() {
+  if [[ "$STASHED" -eq 1 ]]; then
+    echo "Restoring stashed changes..."
+    # pop returns exit 1 when there is nothing to pop, hence `|| true`
+    git stash pop -q || true
+  fi
+}
+trap cleanup EXIT
+
+echo "Running pre-push checks..."
+
+echo "1. cargo fmt --check"
+cargo fmt --all -- --check
+
+echo "2. cargo clippy"
+cargo clippy --all-targets --all-features -- -D warnings
+
+echo "3. cargo test"
+cargo test --all-features --all-targets
+
+echo "All checks passed."

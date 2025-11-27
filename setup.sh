@@ -1,29 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-HOOK_DIR=".git/hooks"
-HOOK_FILE="$HOOK_DIR/pre-push"
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+HOOK_SRC="$REPO_ROOT/hooks/pre-push"
+HOOK_DST="$REPO_ROOT/.git/hooks/pre-push"
 
-mkdir -p "$HOOK_DIR"
+if [ ! -f "$HOOK_SRC" ]; then
+  echo "Error: $HOOK_SRC does not exist."
+  exit 1
+fi
 
-cat > "$HOOK_FILE" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
+cp "$HOOK_SRC" "$HOOK_DST"
+chmod +x "$HOOK_DST"
 
-echo "Running pre-push checks..."
-
-echo "1. cargo fmt --check"
-cargo fmt --all -- --check
-
-echo "2. cargo clippy"
-cargo clippy --all-targets --all-features -- -D warnings
-
-echo "3. cargo test"
-cargo test --all-features --all-targets
-
-echo "All checks passed."
-EOF
-
-chmod +x "$HOOK_FILE"
-
-echo "Installed pre-push hook into $HOOK_FILE"
+echo "Installed pre-push hook to $HOOK_DST"
