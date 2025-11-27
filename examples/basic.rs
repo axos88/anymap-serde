@@ -33,9 +33,7 @@ fn main() {
   // Lazy deserialize via get_mut
   assert_eq!(m2.get::<String>().map(|s| s.unwrap().clone()), Some("hello".to_string()));
 
-  m2.entry::<usize>().and_modify(|v| *v += 1);
+  m2.entry::<usize>().and_modify(|mut v| *v += 1);
 
   assert_eq!(m2.try_get::<usize>(), Some(&43usize));
-
-
 }

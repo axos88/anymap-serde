@@ -1,26 +1,80 @@
 //! A serializable AnyMap-like container keyed by `type_name::<T>()`.
 //!
-//! - Stored map: `HashMap<String, Entry>`
-//! - `Entry` stores a `serde_value::Value` (serialized form) and an optional cached `Box<dyn Any>`.
-//! - On `insert`, values are serialized and cached; on Serialize, only the serialized `Value` is saved.
-//! - On Deserialize, we only reconstruct the `Value` and leave the cache empty.
+//! This crate provides `SerializableAnyMap`, an AnyMap-compatible container that
+//! stores values in a serializable form (`serde_value::Value`) and optionally
+//! caches a deserialized `Box<dyn Any>` for fast access. Keys are the stable
+//! string returned by `key_for_type::<T>()`, not `TypeId`, which makes
+//! the map suitable for sending over the network and reconstructing on another
+//! process / compilation unit.
 //!
-//! This aims to be a drop-in replacement for basic `anymap3` use-cases and implements
-//! an `entry()` API similar to standard maps.
+//! Key properties:
+//! - The on-disk / on-wire representation is a `HashMap<String, serde_value::Value>`.
+//! - Deserialized values are stored in-memory only and are not serialized.
+//! - Inserting a value serializes it immediately and stores the value in both forms.
+//! - Deserialization reconstructs only the serialized representation; the cache is empty
+//!   until a lazy access triggers deserialization, since we don't have access to type information
+//!   at collection deserialization time
+//!
+//! # Motivation
+//!
+//! This is useful for extension holders (for example request extensions) where
+//! heterogeneous typed data must be transported and reconstructed remotely.
+//!
+//! Example (illustrative):
+//! ```rust
+//! # use serde::{Serialize, Deserialize};
+//! # use serde_json;
+//! # use anymap_serde::SerializableAnyMap;
+//! #[derive(Serialize, Deserialize, Debug, PartialEq)]
+//! struct Ext { a: u32 }
+//!
+//! let mut map = SerializableAnyMap::new();
+//! map.insert(Ext { a: 10 });
+//!
+//! // Serialize to JSON
+//! let json = serde_json::to_string(&map).unwrap();
+//!
+//! // On the other side, deserialize and access the stored type by `type_name::<T>()`
+//! let mut map2: SerializableAnyMap = serde_json::from_str(&json).unwrap();
+//! let value: &Ext = map2.get::<Ext>().unwrap().unwrap();
+//! assert_eq!(value.a, 10);
+//! ```
+
+mod write_guard;
 
 use serde::{Deserialize, Serialize};
 use serde_value::{to_value, Value};
 use std::{any::Any, collections::HashMap};
 use std::collections::hash_map;
-use serde::de::Error;
+use std::hint::unreachable_unchecked;
+use std::io::Write;
+use std::ops::Deref;
+use serde::de::{DeserializeOwned, Error};
+use crate::write_guard::WriteGuard;
 
-/// The serializable `SerializableAnyMap` container.
+/// A serializable heterogeneous-map keyed by the stable `type_name::<T>()`.
+///
+/// `SerializableAnyMap` behaves like `anymap3` for most basic use-cases but
+/// stores values in serialized form so the entire map can be serialized and
+/// sent across process boundaries. The map implements `Serialize` and
+/// `Deserialize` where only the serialized form is persisted; the cached
+/// deserialized values are not persisted.
+///
+/// Inserted types must implement `Serialize + Deserialize<'de> + 'static`.
+///
+/// See method docs for usage patterns (`insert`, `get`, `get_mut`, `entry`, …).
+///
+/// Safety notes:
+/// - Some escape hatches (`as_raw_mut`, `from_raw`) are `unsafe` — the caller
+///   must ensure the key string matches the type stored under it.
+/// A stored entry containing the serialized representation and an optional
+/// cached runtime value.
+///
 #[derive(Default, Serialize, Deserialize, Debug, Clone)]
 #[serde(transparent)]
 pub struct SerializableAnyMap {
     raw: HashMap<String, SerializableAnyMapEntry>,
 }
-
 
 impl SerializableAnyMap {
     /// Create a new empty `SerializableAnyMap`.
@@ -94,7 +148,7 @@ impl SerializableAnyMap {
     where
       T: for<'de> Deserialize<'de> + Any + 'static,
     {
-        let key = std::any::type_name::<T>().to_string();
+        let key = key_for_type::<T>().to_string();
         self.raw.get(&key)?.try_get()
     }
 
@@ -106,9 +160,9 @@ impl SerializableAnyMap {
     #[inline]
     pub fn get<T>(&mut self) -> Option<Result<&T, serde_value::DeserializerError>>
     where
-      T: for<'de> Deserialize<'de> + Any + 'static,
+      T: Serialize + for<'de> Deserialize<'de> + 'static,
     {
-        Self::get_mut(self).map(|r| r.map(|v| &*v))
+        Self::get_mut(self).map(|r| r.map(|v: WriteGuard<T>| v.into_ref()))
     }
 
     /// Gets a copy value of type `T`, by deserializing the value in the map.
@@ -128,11 +182,11 @@ impl SerializableAnyMap {
 
 
     /// Get a mutable reference to a value of type `T`, lazily deserializing into the cache if necessary.
-    pub fn get_mut<T>(&mut self) -> Option<Result<&mut T, serde_value::DeserializerError>>
+    pub fn get_mut<T>(&mut self) -> Option<Result<WriteGuard<'_, T>, serde_value::DeserializerError>>
     where
-      T: for<'de> Deserialize<'de> + Any + 'static,
+      T: Serialize + for<'de> Deserialize<'de> + Any + 'static,
     {
-        let key = std::any::type_name::<T>().to_string();
+        let key = key_for_type::<T>().to_string();
         Some(self.raw.get_mut(&key)?.get_mut())
     }
 
@@ -142,7 +196,7 @@ impl SerializableAnyMap {
     where
       T: 'static,
     {
-        let key = std::any::type_name::<T>().to_string();
+        let key = key_for_type::<T>().to_string();
         self.raw.get(&key).map(|e| &e.serialized)
     }
 
@@ -164,7 +218,7 @@ impl SerializableAnyMap {
     where
       T: Serialize + for<'de> Deserialize<'de> + Any + 'static,
     {
-        let key = std::any::type_name::<T>().to_string();
+        let key = key_for_type::<T>().to_string();
         let serialized = to_value(&value).expect("serialization failed");
 
         let new_entry = SerializableAnyMapEntry { serialized, value: Some(Box::new(value)) };
@@ -177,7 +231,7 @@ impl SerializableAnyMap {
     ///
     /// If the map already had this type of value present, nothing is updated, and
     /// an error containing the occupied entry and the value is returned.
-    pub fn try_insert<T>(&mut self, value: T) -> Result<&mut T, OccupiedError<'_, T>> where
+    pub fn try_insert<'a, T>(&'a mut self, value: T) -> Result<WriteGuard<'a, T>, OccupiedError<'a, T>> where
         T: Serialize + for<'de> Deserialize<'de> + Any + 'static
     {
         match self.entry::<T>() {
@@ -192,7 +246,7 @@ impl SerializableAnyMap {
     where
       T: Serialize + for<'de> Deserialize<'de> + Any + 'static,
     {
-        let key = std::any::type_name::<T>().to_string();
+        let key = key_for_type::<T>().to_string();
         self.raw.remove(&key).and_then(|entry| entry.into_inner::<T>().ok())
     }
 
@@ -202,7 +256,7 @@ impl SerializableAnyMap {
     where
       T: 'static,
     {
-        let key = std::any::type_name::<T>().to_string();
+        let key = key_for_type::<T>().to_string();
         self.raw.contains_key(&key)
     }
 
@@ -212,7 +266,7 @@ impl SerializableAnyMap {
     where
       T: 'static,
     {
-        let key = std::any::type_name::<T>().to_string();
+        let key = key_for_type::<T>().to_string();
         self.raw.contains_key(&key)
     }
 
@@ -222,7 +276,18 @@ impl SerializableAnyMap {
     where
       T: Serialize + for<'de> Deserialize<'de> + Any + 'static,
     {
-        let key = std::any::type_name::<T>().to_string();
+        let key = key_for_type::<T>().to_string();
+
+        let should_remove = match self.raw.entry(key.clone()) {
+            hash_map::Entry::Occupied(mut inner) => {
+                inner.get_mut().get_mut::<T>().is_err()
+            },
+            _ => false
+        };
+
+        if should_remove {
+            self.raw.remove(&key);
+        }
 
         match self.raw.entry(key) {
             hash_map::Entry::Occupied(inner) => {
@@ -299,12 +364,31 @@ impl<A: ?Sized + Any + Serialize + for <'de>Deserialize<'de>> Extend<Box<A>> for
     fn extend<T: IntoIterator<Item = Box<A>>>(&mut self, iter: T) {
         for item in iter {
             let serialized = to_value(&*item).expect("serialization failed");
-            let _ = self.raw.insert(std::any::type_name::<T>().to_string(), SerializableAnyMapEntry { serialized, value: Some(item) });
+            let _ = self.raw.insert(key_for_type::<T>().to_string(), SerializableAnyMapEntry { serialized, value: Some(item) });
         }
     }
 }
 
-/// An entry in the `SerializableAnyMap`, which contains the serialized value and an optional deserialized value.
+/// A stored entry containing the serialized representation and an optional
+/// cached runtime value.
+///
+/// - `serialized`: the `serde_value::Value` used for Serialize/Deserialize of the map.
+/// - `value`: an optional `Box<dyn Any>` holding the deserialized value. This field is not
+/// serialized and is cleared on `Clone` and `Deserialize`.
+///
+/// Semantics:
+/// - On `insert`, both `serialized` and `value` are populated.
+/// - On access (`get`/`get_mut`), the entry will lazily deserialize `serialized` into
+///   `value` if the cache is empty.
+/// - `into_inner` attempts to extract the concrete type from the cache or by deserializing.
+///
+/// Notes:
+/// - The cloning, serialization and deserialization happens based on the serialized `serde_value::Value`, so
+/// any modifications to fields that are marked `#[serde(skip)]` will not be lost after a serialization
+/// round-trip, or after cloning the map.
+/// - Currently any modifications to the cached `value` are not reflected back into the `serialized` form, so
+/// serialization WILL reflect the original value only. This is a known limitation and is planned to be
+/// addressed in a future version by returning a Guard object that will update the serialized value on Drop.
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(transparent)]
 pub struct SerializableAnyMapEntry {
@@ -335,24 +419,21 @@ impl SerializableAnyMapEntry {
 
     pub fn get<T>(&mut self) -> Result<&T, serde_value::DeserializerError>
     where
-      T: for<'de> Deserialize<'de> + 'static,
+      T: Serialize + for<'de> Deserialize<'de> + 'static,
     {
-        self.get_mut().map(|x| &*x)
+        self.get_mut().map(|x: WriteGuard<T>| x.into_ref())
     }
 
-    pub fn get_mut<T>(&mut self) -> Result<&mut T, serde_value::DeserializerError>
+    pub fn get_mut<T>(&mut self) -> Result<WriteGuard<T>, serde_value::DeserializerError>
     where
-      T: for<'de> Deserialize<'de> + 'static,
+      T: for<'de> Deserialize<'de> + Serialize + 'static,
     {
         if self.value.is_none() {
             let deserialized = T::deserialize(self.serialized.clone())?;
             self.value = Some(Box::new(deserialized));
         }
 
-        match self.value {
-            Some(ref mut v) => v.downcast_mut::<T>().ok_or(serde_value::DeserializerError::custom("wrong type in serialization")),
-            None => unreachable!(),
-        }
+        Ok(WriteGuard::new(self))
     }
 
 
@@ -370,19 +451,39 @@ impl SerializableAnyMapEntry {
 
 // ===================== Entry API types =====================
 
-/// A view into a single location in an [`SerializableAnyMap`], which may be vacant or occupied.
+/// A view into a single location in the map. Mirrors the `HashMap::entry` API so
+/// code written against `anymap3::entry::<T>()` can be adapted easily.
+///
+/// Common patterns:
+/// - `map.entry::<T>().or_insert(default)` — insert default and return a mutable ref.
+/// - `map.entry::<T>().and_modify(|v| { ... })` — modify if present.
+///
+/// The generic parameter `T` bounds require `Serialize + Deserialize<'de> + Any + 'static`.
 pub enum Entry<'a, T> {
     Occupied(OccupiedEntry<'a, T>),
     Vacant(VacantEntry<'a, T>),
 }
 
-/// A view into a single occupied location in an [`SerializableAnyMap`].
+/// Occupied entry for a key known to exist.
+///
+/// Provides:
+/// - `try_get` — get cached value if already deserialized (no lazy deserialization).
+/// - `get` / `get_mut` — lazily deserialize into the cache and return references.
+/// - `insert` — replace the stored value (returns the old value deserialized).
+/// - `remove` — remove and return the deserialized value.
+///
+/// Note: `get_mut` and `into_mut` return results because deserialization can fail.
 pub struct OccupiedEntry<'a, T> {
     inner: hash_map::OccupiedEntry<'a, String, SerializableAnyMapEntry>,
     _marker: std::marker::PhantomData<T>,
 }
 
-/// A view into a single empty location in an [`SerializableAnyMap`].
+/// Vacant entry for a type that is not present.
+///
+/// Methods:
+/// - `insert(value)` — serialize & cache `value`, return a mutable reference to it.
+/// - `insert_serialized(value)` (unsafe) — insert a pre-serialized `serde_value::Value`
+///    without a cached runtime value. The caller must ensure the `Value` matches `T`.
 pub struct VacantEntry<'a, T> {
     inner: hash_map::VacantEntry<'a, String, SerializableAnyMapEntry>,
     _marker: std::marker::PhantomData<T>,
@@ -395,7 +496,7 @@ where
     /// Ensures a value is in the entry by inserting the default if empty, and returns
     /// a mutable reference to the value in the entry.
     #[inline]
-    pub fn or_insert(self, default: T) -> Result<&'a mut T, serde_value::DeserializerError> {
+    pub fn or_insert(self, default: T) -> Result<WriteGuard<'a, T>, serde_value::DeserializerError> {
         match self {
             Entry::Occupied(inner) => inner.into_mut(),
             Entry::Vacant(inner) => Ok(inner.insert(default)),
@@ -405,7 +506,7 @@ where
     /// Ensures a value is in the entry by inserting the result of the default function if
     /// empty, and returns a mutable reference to the value in the entry.
     #[inline]
-    pub fn or_insert_with<F: FnOnce() -> T>(self, default: F) -> Result<&'a mut T, serde_value::DeserializerError> {
+    pub fn or_insert_with<F: FnOnce() -> T>(self, default: F) -> Result<WriteGuard<'a, T>, serde_value::DeserializerError> {
         match self {
             Entry::Occupied(inner) => inner.into_mut(),
             Entry::Vacant(inner) => Ok(inner.insert(default())),
@@ -415,7 +516,7 @@ where
     /// Ensures a value is in the entry by inserting the default value if empty,
     /// and returns a mutable reference to the value in the entry.
     #[inline]
-    pub fn or_default(self) -> Result<&'a mut T, serde_value::DeserializerError> where T: Default {
+    pub fn or_default(self) -> Result<WriteGuard<'a, T>, serde_value::DeserializerError> where T: Default {
         match self {
             Entry::Occupied(inner) => inner.into_mut(),
             Entry::Vacant(inner) => Ok(inner.insert(Default::default())),
@@ -425,7 +526,7 @@ where
     /// Provides in-place mutable access to an occupied entry before any potential inserts
     /// into the map.
     #[inline]
-    pub fn and_modify<F: FnOnce(&mut T)>(self, f: F) -> Self {
+    pub fn and_modify<F: FnOnce(WriteGuard<T>)>(self, f: F) -> Self {
         match self {
             Entry::Occupied(mut inner) => {
                 let _ = inner.get_mut().map(f);
@@ -471,8 +572,8 @@ where
 
     /// Gets a mutable reference to the value in the entry
     #[inline]
-    pub fn get_mut(&mut self) -> Result<&mut T, serde_value::DeserializerError> {
-        unsafe { self.inner.get_mut().get_mut() }
+    pub fn get_mut(&mut self) -> Result<WriteGuard<T>, serde_value::DeserializerError> {
+        self.inner.get_mut().get_mut()
     }
 
     /// Remove and return the stored value (deserialized) if possible.
@@ -485,7 +586,7 @@ where
     /// Converts the OccupiedEntry into a mutable reference to the value in the entry
     /// with a lifetime bound to the collection itself
     #[inline]
-    pub fn into_mut(self) -> Result<&'a mut T, serde_value::DeserializerError> {
+    pub fn into_mut(self) -> Result<WriteGuard<'a, T>, serde_value::DeserializerError> {
         self.inner.into_mut().get_mut()
     }
 
@@ -504,10 +605,13 @@ where
   T: Serialize + for<'de> Deserialize<'de> + Any + 'static,
 {
     /// Insert the value and return a mutable reference to it.
-    pub fn insert(self, value: T) -> &'a mut T {
+    pub fn insert(self, value: T) -> WriteGuard<'a, T> {
         let serialized = to_value(&value).expect("serialization failed");
         let entry = SerializableAnyMapEntry { serialized, value: Some(Box::new(value)) };
-        self.inner.insert(entry).value.as_mut().unwrap().downcast_mut().expect("wrong type in serialization")
+
+        self.inner.insert(entry);
+
+        todo!();
     }
 
     /// Insert the provided serialized `Value` under this type-name key.
@@ -517,9 +621,19 @@ where
 }
 
 
+/// Error returned by `try_insert` when an entry is already occupied.
+///
+/// Contains:
+/// - `entry`: the `OccupiedEntry` for the type.
+/// - `value`: the value which was not inserted because the entry was occupied.
 pub struct OccupiedError<'a, V: 'a> {
     /// The entry in the map that was already occupied.
     pub entry: OccupiedEntry<'a, V>,
     /// The value which was not inserted, because the entry was already occupied.
     pub value: V,
+}
+
+/// Get the stable string key for type `T`. Implementation may only change across major versions.
+fn key_for_type<T: ?Sized>() -> String {
+    std::any::type_name::<T>().to_string()
 }
