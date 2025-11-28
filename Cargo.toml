@@ -1,11 +1,11 @@
 [package]
 
 name = "anymap-serde"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 
 description = "Low overhead AnyMap with serde-backed serialization of stored values"
-authors = ["axos88 <akos@vandra.hu>"]
+authors = ["Vandra-Meyer Ákos (axos88) <akos@vandra.hu>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/axos88/anymap-serde"
 homepage = "https://github.com/axos88/anymap-serde"
