@@ -1,10 +1,10 @@
 use crate::RawItem;
+use crate::stable_type_id::StableTypeId;
 use crate::write_guard::WriteGuard;
 use serde::{Deserialize, Serialize};
 use serde_value::{Value, to_value};
 use std::any::Any;
 use std::collections::hash_map;
-use crate::stable_type_id::StableTypeId;
 
 /// A view into a single location in the map. Mirrors the `HashMap::entry` API so
 /// code written against `anymap3::entry::<T>()` can be adapted easily.

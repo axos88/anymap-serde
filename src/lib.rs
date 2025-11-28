@@ -44,17 +44,17 @@
 #![deny(missing_docs, unused, warnings)]
 
 mod entry;
-mod write_guard;
 mod stable_type_id;
+mod write_guard;
 
 use crate::entry::{Entry, OccupiedEntry, OccupiedError, VacantEntry};
 use crate::write_guard::WriteGuard;
 use serde::{Deserialize, Serialize};
 use serde_value::{Value, to_value};
-use std::collections::{hash_map, TryReserveError};
-use std::{any::Any, collections::HashMap};
-use std::marker::PhantomData;
 pub use stable_type_id::StableTypeId;
+use std::collections::{TryReserveError, hash_map};
+use std::marker::PhantomData;
+use std::{any::Any, collections::HashMap};
 
 /// A serializable heterogeneous-map keyed by a stable value derived from the type.
 ///
@@ -192,7 +192,6 @@ impl SerializableAnyMap {
     pub fn try_reserve(&mut self, additional: usize) -> Result<(), TryReserveError> {
         self.raw.try_reserve(additional)
     }
-
 
     /// Shrinks the capacity of the collection as much as possible. It will drop
     /// down as much as possible while maintaining the internal rules
@@ -360,7 +359,7 @@ impl SerializableAnyMap {
         match self.entry::<T>() {
             (Entry::Occupied(inner), None) => Some(inner.into_mut().map(|g| g.into_ref())),
             (Entry::Vacant(_), None) => None,
-            (_, Some(e)) => Some(Err(e))
+            (_, Some(e)) => Some(Err(e)),
         }
     }
 
@@ -417,7 +416,7 @@ impl SerializableAnyMap {
         match self.entry::<T>() {
             (Entry::Occupied(inner), None) => Some(inner.into_mut()),
             (Entry::Vacant(_), None) => None,
-            (_, Some(e)) => Some(Err(e))
+            (_, Some(e)) => Some(Err(e)),
         }
     }
 
@@ -467,10 +466,7 @@ impl SerializableAnyMap {
     /// assert_eq!(map.get_mut::<u16>().unwrap().unwrap().into_ref(), &42u16); // deserialization successful.
     /// ```
     #[inline]
-    pub fn insert_only_serialized<T>(
-        &mut self,
-        value: Value,
-    ) -> Option<Item<T>> {
+    pub fn insert_only_serialized<T>(&mut self, value: Value) -> Option<Item<T>> {
         let key = StableTypeId::for_type::<T>();
 
         let e = RawItem {
@@ -503,9 +499,7 @@ impl SerializableAnyMap {
             serialized,
             value: Some(Box::new(value)),
         };
-        self.raw
-            .insert(key, new_entry)
-            .map(RawItem::wrap)
+        self.raw.insert(key, new_entry).map(RawItem::wrap)
     }
 
     /// Tries to insert a value into the map, and returns
@@ -533,7 +527,6 @@ impl SerializableAnyMap {
         match self.entry::<T>().0 {
             Entry::Occupied(entry) => Err(OccupiedError { entry, value }),
             Entry::Vacant(entry) => Ok(entry.insert(value)),
-
         }
     }
 
@@ -618,7 +611,10 @@ impl SerializableAnyMap {
         T: 'static,
     {
         let key = StableTypeId::for_type::<T>();
-        self.raw.get(&key).map(|e| e.value.is_some()).unwrap_or(false)
+        self.raw
+            .get(&key)
+            .map(|e| e.value.is_some())
+            .unwrap_or(false)
     }
 
     /// Entry API similar to `HashMap::entry` / `anymap3::entry::<T>()`.
@@ -789,7 +785,7 @@ pub struct RawItem {
     /// value runtime representation; skipped during (de)serialization.
     #[serde(skip)]
     #[serde(default)]
-    value: Option<Box<dyn Any>>
+    value: Option<Box<dyn Any>>,
 }
 
 impl Clone for RawItem {
@@ -801,12 +797,10 @@ impl Clone for RawItem {
     }
 }
 
-
 ///TODO Docuemnt
 pub struct Item<T>(RawItem, PhantomData<T>);
 
 impl<T> Item<T> {
-
     /// Attempt to get an immutable reference to the deserialized value of type `T`. Will return None
     /// if the value has not yet been deserialized, as we need a mutable reference to mutate the
     /// entry to save the deserialized value.
@@ -827,7 +821,7 @@ impl<T> Item<T> {
     ///
     pub fn try_get(&self) -> Option<&T>
     where
-      T: for<'de> Deserialize<'de> + 'static,
+        T: for<'de> Deserialize<'de> + 'static,
     {
         self.0.value.as_ref()?.downcast_ref::<T>()
     }
@@ -855,7 +849,7 @@ impl<T> Item<T> {
     /// ```
     pub fn get(&mut self) -> Result<&T, serde_value::DeserializerError>
     where
-      T: Serialize + for<'de> Deserialize<'de> + 'static,
+        T: Serialize + for<'de> Deserialize<'de> + 'static,
     {
         self.0.get_mut().map(|x: WriteGuard<T>| x.into_ref())
     }
@@ -879,7 +873,7 @@ impl<T> Item<T> {
     /// ```
     pub fn get_mut<'a>(&'a mut self) -> Result<WriteGuard<'a, T>, serde_value::DeserializerError>
     where
-      T: for<'de> Deserialize<'de> + Serialize + 'static,
+        T: for<'de> Deserialize<'de> + Serialize + 'static,
     {
         if self.0.value.is_none() {
             let deserialized = T::deserialize(self.0.serialized.clone())?;
@@ -904,15 +898,15 @@ impl<T> Item<T> {
     /// ```
     pub fn into_inner(mut self) -> Result<T, serde_value::DeserializerError>
     where
-      T: for<'de> Deserialize<'de> + 'static,
+        T: for<'de> Deserialize<'de> + 'static,
     {
-        self.0.value
-          .take()
-          .map(|a| Ok(*a.downcast::<T>().unwrap()))
-          .unwrap_or_else(|| T::deserialize(self.0.serialized))
+        self.0
+            .value
+            .take()
+            .map(|a| Ok(*a.downcast::<T>().unwrap()))
+            .unwrap_or_else(|| T::deserialize(self.0.serialized))
     }
 }
-
 
 impl RawItem {
     /// Attempt to get an immutable reference to the deserialized value of type `T`. Will return None
