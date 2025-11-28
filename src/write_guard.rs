@@ -1,4 +1,4 @@
-use crate::Wrapper;
+use crate::RawItem;
 use serde::Serialize;
 use serde_value::to_value;
 use std::marker::PhantomData;
@@ -10,7 +10,7 @@ pub struct WriteGuard<'a, T>
 where
     T: Serialize + 'static,
 {
-    entry: Option<&'a mut Wrapper>,
+    entry: Option<&'a mut RawItem>,
     ghost: PhantomData<T>,
 }
 
@@ -18,7 +18,7 @@ impl<'a, T> WriteGuard<'a, T>
 where
     T: Serialize + 'static,
 {
-    pub(crate) fn new(entry: &'a mut Wrapper) -> Self {
+    pub(crate) fn new(entry: &'a mut RawItem) -> Self {
         WriteGuard {
             entry: Some(entry),
             ghost: PhantomData,

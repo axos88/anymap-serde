@@ -42,7 +42,7 @@ fn main() {
         Some("hello".to_string())
     );
 
-    m2.entry::<usize>().and_modify(|mut v| *v += 1);
+    m2.entry::<usize>().0.and_modify(|mut v| *v += 1);
 
     assert_eq!(m2.try_get::<usize>(), Some(&43usize));
 }

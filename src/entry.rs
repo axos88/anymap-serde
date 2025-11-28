@@ -1,9 +1,10 @@
-use crate::Wrapper;
+use crate::RawItem;
 use crate::write_guard::WriteGuard;
 use serde::{Deserialize, Serialize};
 use serde_value::{Value, to_value};
 use std::any::Any;
 use std::collections::hash_map;
+use crate::stable_type_id::StableTypeId;
 
 /// A view into a single location in the map. Mirrors the `HashMap::entry` API so
 /// code written against `anymap3::entry::<T>()` can be adapted easily.
@@ -30,7 +31,7 @@ pub enum Entry<'a, T> {
 ///
 /// Note: `get_mut` and `into_mut` return results because deserialization can fail.
 pub struct OccupiedEntry<'a, T> {
-    inner: hash_map::OccupiedEntry<'a, String, Wrapper>,
+    inner: hash_map::OccupiedEntry<'a, StableTypeId, RawItem>,
     _marker: std::marker::PhantomData<T>,
 }
 
@@ -41,7 +42,7 @@ pub struct OccupiedEntry<'a, T> {
 /// - `insert_serialized(value)` (unsafe) — insert a pre-serialized `serde_value::Value`
 ///   without a cached runtime value. The caller must ensure the `Value` matches `T`.
 pub struct VacantEntry<'a, T> {
-    inner: hash_map::VacantEntry<'a, String, Wrapper>,
+    inner: hash_map::VacantEntry<'a, StableTypeId, RawItem>,
     _marker: std::marker::PhantomData<T>,
 }
 
@@ -122,7 +123,7 @@ impl<'a, T> OccupiedEntry<'a, T>
 where
     T: Serialize + for<'de> Deserialize<'de> + Any + 'static,
 {
-    pub(crate) fn new(inner: hash_map::OccupiedEntry<'a, String, Wrapper>) -> Self {
+    pub(crate) fn new(inner: hash_map::OccupiedEntry<'a, StableTypeId, RawItem>) -> Self {
         OccupiedEntry {
             inner,
             _marker: std::marker::PhantomData,
@@ -164,7 +165,7 @@ where
     pub fn insert(&mut self, value: T) -> Result<T, serde_value::DeserializerError> {
         let serialized = to_value(&value).expect("serialization failed");
         self.inner
-            .insert(Wrapper {
+            .insert(RawItem {
                 serialized,
                 value: Some(Box::new(value)),
             })
@@ -176,7 +177,7 @@ impl<'a, T> VacantEntry<'a, T>
 where
     T: Serialize + for<'de> Deserialize<'de> + Any + 'static,
 {
-    pub(crate) fn new(inner: hash_map::VacantEntry<'a, String, Wrapper>) -> Self {
+    pub(crate) fn new(inner: hash_map::VacantEntry<'a, StableTypeId, RawItem>) -> Self {
         VacantEntry {
             inner,
             _marker: std::marker::PhantomData,
@@ -186,19 +187,17 @@ where
     /// Insert the value and return a mutable reference to it.
     pub fn insert(self, value: T) -> WriteGuard<'a, T> {
         let serialized = to_value(&value).expect("serialization failed");
-        let entry = Wrapper {
+        let entry = RawItem {
             serialized,
             value: Some(Box::new(value)),
         };
 
-        self.inner.insert(entry);
-
-        todo!();
+        WriteGuard::new(self.inner.insert(entry))
     }
 
     /// Insert the provided serialized `Value` under this type-name key.
     pub unsafe fn insert_serialized(self, value: Value) {
-        self.inner.insert(Wrapper {
+        self.inner.insert(RawItem {
             serialized: value,
             value: None,
         });
